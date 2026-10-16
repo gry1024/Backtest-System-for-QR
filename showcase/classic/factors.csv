@@ -1,0 +1,7 @@
+factor,expression,lookback,features,proxies,coverage,usable_sessions,ic,rank_ic
+f000,"Mul(-1,TsPctChange($close,6))",5,close,,1.0,424,0.02096172962884088,0.037739309775172064
+f001,"TsPctChange($close,61)",60,close,,0.9999291970469941,424,-0.02882666483926997,-0.08561175706941235
+f002,"Mul(-1,TsStd(TsPctChange($close,2),20))",20,close,,1.0,424,0.013092231046159183,0.0664084342112157
+f003,"Mul(-1,Div(Sub($close,$open),$open))",0,"close,open",,1.0,424,0.017374578235215807,0.023005117397730722
+f004,"TsMean(Div(Abs(TsPctChange($close,2)),Add($amt,1)),20)",20,"amt,close",,1.0,424,0.05285030494328899,0.09029088453430023
+f005,"TsMean(Div($amt,Add($num_trades,1)),20)",19,"amt,num_trades",,0.9998645715328411,424,-0.00127429239835367,-0.06495518596531247

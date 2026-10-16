@@ -1,0 +1,2 @@
+factor,expression,lookback,features,proxies,coverage,usable_sessions,ic,rank_ic
+f000,"Mul(-1,TsStd(TsPctChange($close,2),20))",20,close,,1.0,424,0.013092231046159183,0.0664084342112157

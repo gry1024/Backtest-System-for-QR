@@ -1,0 +1,80 @@
+{
+  "created_utc": "2026-10-16T16:13:32.471263+00:00",
+  "requested_start": "2025-01-01",
+  "requested_end": "2026-09-30",
+  "actual_start": "2025-01-02",
+  "actual_end": "2026-09-30",
+  "sessions": 424,
+  "method": "single",
+  "config": {
+    "window": 252,
+    "label_days": 20,
+    "refit_every": 20,
+    "min_train_days": 60,
+    "n_factors": 10,
+    "threshold_ric": 0.015,
+    "threshold_ricir": 0.15,
+    "ridge_alpha": 0.001,
+    "top_fraction": 0.2,
+    "initial_cash": 1000000000.0,
+    "commission_bps": 1.0,
+    "stamp_duty_bps": 5.0,
+    "liquidate_at_end": true,
+    "min_listing_days": 60,
+    "strict_features": false,
+    "method": "auto"
+  },
+  "data": {
+    "data_start": "2020-01-02",
+    "data_end": "2026-09-30",
+    "stocks": 5451,
+    "sessions": 1636,
+    "proxies": {},
+    "status_known_coverage": 1.0,
+    "universe": "daily historical non-ST; unknown status excluded",
+    "files": {
+      "amt.feather": "cd2a2f43e273963f93230163813aafaddb52307d1805ee1a583aeab931e418c2",
+      "close.feather": "621b7b381f96c7d162317ac67c8831aebfc5e78f4b1ecd59159fc93e0ea109e7",
+      "cumadj.feather": "5ebc13623115743c39b2cb56dbe365f10c4c72d6fed6ac4041d9377895439173",
+      "open.feather": "a75e7aa3dac9e101f2c3cfff85728b26a29ea50ccc6ec46c315a36e8476d5f92",
+      "state.feather": "87ebbbfe0688d3b3ac50f623dffb42c467d8ec0a57dd88c54bc18a430d9e39e5"
+    }
+  },
+  "benchmark": {
+    "name": "CSI 300 price index",
+    "path": "E:\\just_put_everything_you_need_here\\当代量化交易系统的原理与实现\\quant-backtest-system\\benchmarks\\csi300.csv",
+    "sha256": "adadb2ea7b2d50662d36e8a7f35648f9d16035bdabb130ed766b2e412171e480"
+  },
+  "pool_sha256": "061b07205bc980c43eb77e5ad797f4dfd6a991722def90e0418ec4b4af349d83",
+  "warnings": [],
+  "execution": {
+    "signals": "prior close",
+    "rebalance": "open",
+    "valuation": "close",
+    "universe": "historical non-ST",
+    "position_units": "adjusted shares",
+    "final_close_liquidation": true
+  },
+  "python": "3.11.15",
+  "versions": {
+    "numpy": "2.4.6",
+    "pandas": "2.3.3",
+    "pyarrow": "23.0.1",
+    "bottleneck": "1.6.0",
+    "matplotlib": "3.11.2"
+  },
+  "code": {
+    "__init__.py": "11b3b9127dd7757dce847f368847778d06ad95874d50561a635b55ee7d56e015",
+    "__main__.py": "6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279",
+    "cli.py": "8adffe0b98fb09b4dd83b03cb08580d537f792ee530218d58a982fda1e56cd26",
+    "combine.py": "d70c4237bb946f0a872a2e18a0464fe087012f64af67d0b9c31cbda99280bc16",
+    "config.py": "1995c0c04e9b85020e67ec373e7e93f0154dbc611a355046019394c9232194f0",
+    "data.py": "b88a256cd6b22ace0033c63be60a2bbb2d9427335e0ba8fc8c6486dc57ceb2f4",
+    "expressions.py": "af36958d6201679e28d62198b356a1908a0579d1b5cc6b97d8724df559fb79ec",
+    "metrics.py": "a7afbb0b924f67ebde7b874cb7fca18f8b22e65dbc63e044d5bcdb594d039c3d",
+    "portfolio.py": "18a5c73dd06d8f28d9e46679309e0fc1e449cbfc101b98b03e922ea9939d8e7f",
+    "report.py": "bed7178ebcd26f779a9ea2fcbd9d272423a1f099eb7619b27c6d22b2ec759e88",
+    "runner.py": "c83422ec625657b32fc9d75c9530eda86c739c340f81a2c9555474c502dafa66"
+  },
+  "elapsed_seconds": 7.39
+}

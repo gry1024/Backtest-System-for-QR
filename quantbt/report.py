@@ -18,7 +18,10 @@ LABELS = {"total_return": "Total return", "annual_return": "Annualized return", 
           "information_ratio": "Information ratio", "avg_turnover": "Daily turnover (two-way)",
           "avg_exposure": "Average invested capital", "ic": "IC / forward open return",
           "icir": "ICIR (daily)", "rank_ic": "Rank IC", "rank_icir": "Rank ICIR (daily)",
-          "ic_days": "Valid IC sessions", "rank_ic_days": "Valid Rank IC sessions"}
+          "ic_days": "Valid IC sessions", "rank_ic_days": "Valid Rank IC sessions",
+          "final_equity": "Final equity (CNY mn)", "total_commission": "Commission (CNY mn)",
+          "total_stamp_duty": "Stamp duty (CNY mn)", "final_market_value": "Final holdings value (CNY mn)",
+          "final_holdings": "Final holdings count"}
 
 
 def write_json(path, value):
@@ -35,7 +38,7 @@ def write_json(path, value):
     path.write_text(json.dumps(convert(value), ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
 
-def make_report(output, daily, metrics, title, config, proxy_names, method):
+def make_report(output, daily, metrics, title, config, method):
     available = {f.name for f in font_manager.fontManager.ttflist}
     font = next((f for f in ("Microsoft YaHei", "Noto Sans CJK SC", "SimHei", "DejaVu Sans") if f in available), "DejaVu Sans")
     plt.rcParams.update({"font.family": font, "font.size": 10, "axes.unicode_minus": False,
@@ -90,7 +93,7 @@ def make_report(output, daily, metrics, title, config, proxy_names, method):
     exposure_ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
     exposure_ax.set_xlim(dates[0], dates[-1])
     exposure_ax.grid(linewidth=0.5)
-    groups = [list(LABELS)[:9], list(LABELS)[9:]]
+    groups = [list(LABELS)[:11], list(LABELS)[11:]]
     for axis, keys in zip(table_axes, groups):
         axis.axis("off")
         cells = []
@@ -100,7 +103,8 @@ def make_report(output, daily, metrics, title, config, proxy_names, method):
                 value = metrics[name].get(key, np.nan)
                 row.append("—" if value is None or not np.isfinite(value) else
                            f"{value:.1%}" if key in PERCENT else
-                           str(int(value)) if key.endswith("_days") else f"{value:.3f}")
+                           f"{value / 1e6:,.2f}" if key in {"final_equity", "total_commission", "total_stamp_duty", "final_market_value"} else
+                           str(int(value)) if key.endswith("_days") or key == "final_holdings" else f"{value:.3f}")
             cells.append(row)
         table = axis.table(cellText=cells, colLabels=["Metric", *names], cellLoc="right",
                            loc="center", bbox=[0, 0.04, 1, 0.9], colWidths=[0.4] + [0.6 / len(names)] * len(names))
@@ -114,12 +118,11 @@ def make_report(output, daily, metrics, title, config, proxy_names, method):
                 cell.set_text_props(ha="left")
             if r == 0:
                 cell.set_text_props(weight="bold", color="#283746" if c == 0 else colors[c - 1])
-    proxy = ", ".join("$" + x for x in sorted(proxy_names)) or "none"
-    stale = max(frame["stale_weight"].iloc[-1] for frame in daily.values() if "stale_weight" in frame)
     fig.suptitle(f"POOLBENCH  |  {title}\n"
                  f"{dates[0]:%Y-%m-%d} — {dates[-1]:%Y-%m-%d}  ·  {len(dates):,} sessions  ·  "
-                 f"{method}  ·  top {config.top_fraction:.0%}  ·  cost {config.cost_bps:g} bps/side  ·  proxies: {proxy}\n"
-                 f"Research fills: no price-limit / ST / lot / capacity model. Final stale-price exposure: {stale:.2%}.",
+                 f"{method}  ·  top {config.top_fraction:.0%}\n"
+                 f"Non-ST A shares  ·  Initial CNY {config.initial_cash / 1e9:g} bn  ·  "
+                 f"Commission {config.commission_bps:g} bps/side  ·  Sell stamp duty {config.stamp_duty_bps:g} bps",
                  x=0.02, ha="left", fontsize=16, fontweight="bold")
     fig.savefig(output / "report.png", dpi=150)
     fig.savefig(output / "report.svg")

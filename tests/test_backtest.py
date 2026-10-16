@@ -61,7 +61,7 @@ def simulate_small(scores, op, cl, cost=0):
     return simulate(np.asarray(scores, float), np.asarray(op, float), np.asarray(cl, float),
                     np.ones(np.shape(op), bool), np.arange(1, len(op)),
                     pd.date_range("2021-01-01", periods=len(op)),
-                    Config(cost_bps=cost, top_fraction=1/3))
+                    Config(initial_cash=1, commission_bps=cost, stamp_duty_bps=0, liquidate_at_end=False, top_fraction=1/3))
 
 
 def test_cash_accounting_and_fees_are_self_financing():
@@ -119,6 +119,58 @@ def test_constant_signals_stay_in_cash():
     result = simulate_small([[1,1,1], [np.nan]*3], [[10]*3]*3, [[10]*3, [12]*3, [15]*3])
     np.testing.assert_allclose(result.nav, 1)
     np.testing.assert_allclose(result.holdings, 0)
+
+
+def test_billion_yuan_account_fees_and_final_close_liquidation():
+    cfg = Config(top_fraction=1/3)
+    op = np.full((3,3), 10.0)
+    cl = op.copy()
+    cl[2, 0] = 12
+    frame = simulate(np.array([[3,2,1],[3,2,1]]), op, cl, np.ones(op.shape, bool),
+                     np.array([1,2]), pd.date_range("2025-01-01", periods=3), cfg)
+    bought = 1e9 / 1.0001
+    sold = bought * 1.2
+    expected = sold * (1-.0001-.0005)
+    assert frame.equity.iloc[0] == pytest.approx(bought)
+    assert frame.commission.sum() == pytest.approx((bought+sold)*.0001)
+    assert frame.stamp_duty.sum() == pytest.approx(sold*.0005)
+    assert frame.equity.iloc[-1] == pytest.approx(expected)
+    assert frame.cash.iloc[-1] == pytest.approx(expected)
+    assert frame.market_value.iloc[-1] == 0
+    assert frame.holdings.iloc[-1] == 0
+    assert frame.buy_notional.iloc[-1] == 0
+    assert frame.nav.iloc[-1] == pytest.approx(expected/1e9)
+
+
+def test_st_transition_exits_position_and_blocks_new_st_buy():
+    cfg = Config(initial_cash=1000, commission_bps=0, stamp_duty_bps=0,
+                 liquidate_at_end=False, top_fraction=.25)
+    op = np.full((3,4), 10.0)
+    cl = op.copy()
+    cl[2,1] = 12
+    status = np.ones(op.shape, dtype="int8")
+    status[2,0] = 3
+    frame = simulate(np.array([[4,3,2,1],[4,3,2,1]]), op, cl, np.ones(op.shape,bool),
+                     np.array([1,2]), pd.date_range("2025-01-01",periods=3), cfg, status)
+    assert frame.equity.iloc[-1] == pytest.approx(1200)
+    assert frame.st_holdings.iloc[-1] == 0
+    assert frame.st_buy_notional.sum() == 0
+    assert frame.unknown_status_buy_notional.sum() == 0
+    assert frame.sell_notional.iloc[-1] == pytest.approx(1000)
+
+
+def test_suspension_status_freezes_even_when_vendor_has_an_open_price():
+    cfg = Config(initial_cash=1000, commission_bps=0, stamp_duty_bps=0,
+                 liquidate_at_end=True, top_fraction=1/3)
+    prices = np.full((3,3),10.0)
+    status = np.ones(prices.shape,dtype="int8")
+    status[2,0] = 0
+    frame = simulate(np.array([[3,2,1],[3,2,1]]), prices, prices, np.ones(prices.shape,bool),
+                     np.array([1,2]), pd.date_range("2025-01-01",periods=3),cfg,status)
+    assert frame.holdings.iloc[-1] == 1
+    assert frame.frozen_open_weight.iloc[-1] == pytest.approx(1)
+    assert frame.cash.iloc[-1] == 0
+    assert frame.market_value.iloc[-1] == pytest.approx(1000)
 
 
 def test_benchmark_requires_complete_calendar(tmp_path):

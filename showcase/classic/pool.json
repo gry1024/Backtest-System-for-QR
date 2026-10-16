@@ -1,0 +1,30 @@
+{
+  "name": "Price and activity blend",
+  "exprs": [
+    "Mul(-1,TsPctChange($close,6))",
+    "TsPctChange($close,61)",
+    "Mul(-1,TsStd(TsPctChange($close,2),20))",
+    "Mul(-1,Div(Sub($close,$open),$open))",
+    "TsMean(Div(Abs(TsPctChange($close,2)),Add($amt,1)),20)",
+    "TsMean(Div($amt,Add($num_trades,1)),20)"
+  ],
+  "weights": null,
+  "backtest": {
+    "window": 252,
+    "label_days": 20,
+    "refit_every": 20,
+    "min_train_days": 60,
+    "n_factors": 10,
+    "threshold_ric": 0.015,
+    "threshold_ricir": 0.15,
+    "ridge_alpha": 0.001,
+    "top_fraction": 0.2,
+    "initial_cash": 1000000000.0,
+    "commission_bps": 1.0,
+    "stamp_duty_bps": 5.0,
+    "liquidate_at_end": true,
+    "min_listing_days": 60,
+    "strict_features": false,
+    "method": "auto"
+  }
+}

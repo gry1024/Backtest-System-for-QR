@@ -19,7 +19,7 @@ from .portfolio import simulate
 from .report import make_report, write_json
 
 
-def run(pool_path, data_path, benchmark_path, output, overrides=None, check=False):
+def run(pool_path, data_path, benchmark_path, output, overrides=None, check=False, status_path=None):
     started = time.perf_counter()
     code_snapshot = {p.name: sha256(p) for p in sorted(Path(__file__).parent.glob("*.py"))}
     pool_path, output = Path(pool_path), Path(output)
@@ -30,7 +30,7 @@ def run(pool_path, data_path, benchmark_path, output, overrides=None, check=Fals
             expressions.append(Expression(text))
         except ValueError as exc:
             raise ValueError(f"Factor f{i:03d}: {text}\n{exc}") from exc
-    data = MarketData(data_path, config.strict_features)
+    data = MarketData(data_path, config.strict_features, status_path)
     days = data.eval_indices
     signal_days = days - 1
     if signal_days.min() < 0:
@@ -96,27 +96,27 @@ def run(pool_path, data_path, benchmark_path, output, overrides=None, check=Fals
     daily, metrics, all_ics = {}, {}, {}
     print("Simulating daily open orders and closing NAV...", flush=True)
     for name, score in scores.items():
-        frame = simulate(score, data.feature("open"), data.feature("close"), eligible, days, data.dates, config)
+        frame = simulate(score, data.feature("open"), data.feature("close"), eligible, days, data.dates, config, data.state)
         ic = daily_corr(score, labels[signal_days])
         ric = daily_corr(score, labels[signal_days], ranked=True)
         metrics[name] = performance(frame["return"], benchmark_returns, frame["turnover"], ic, ric, frame["exposure"])
+        metrics[name].update(initial_cash=config.initial_cash, final_equity=float(frame["equity"].iloc[-1]),
+                             final_cash=float(frame["cash"].iloc[-1]), final_market_value=float(frame["market_value"].iloc[-1]),
+                             final_holdings=int(frame["holdings"].iloc[-1]),
+                             total_commission=float(frame["commission"].sum()), total_stamp_duty=float(frame["stamp_duty"].sum()))
         frame["drawdown"] = frame["nav"] / np.maximum.accumulate(np.r_[1.0, frame["nav"]])[1:] - 1
         daily[name] = frame
         all_ics[name + " IC"] = ic
         all_ics[name + " RankIC"] = ric
     daily["CSI 300 index"] = pd.DataFrame({"return": benchmark_returns, "nav": benchmark_nav}, index=dates)
     metrics["CSI 300 index"] = performance(benchmark_returns, benchmark_returns)
+    metrics["CSI 300 index"].update(initial_cash=config.initial_cash, final_equity=float(config.initial_cash * benchmark_nav[-1]))
     warnings = []
-    if data.proxies:
-        warnings.append("Missing VWAP/volume use declared OHLC4 proxies. Results are not evaluations of the original fields.")
     if pool["weights"] is not None and method in {"adaptive", "equal"}:
         warnings.append(f"Pool weights are ignored in {method} mode; use method=fixed to apply explicit weights.")
     inactive = [d["factor"] for d in diagnostics if not d["usable_sessions"]]
     if inactive:
         warnings.append(f"No usable signal in factors: {', '.join(inactive)}. Zero contribution, retained in equal blend denominator.")
-    for name, frame in daily.items():
-        if "stale_weight" in frame and frame["stale_weight"].max() > 0:
-            warnings.append(f"{name}: stale price exposure max={frame['stale_weight'].max():.2%}, final={frame['stale_weight'].iloc[-1]:.2%}; no delisting recovery data.")
     write_json(output / "pool.json", pool)
     write_json(output / "metrics.json", metrics)
     pd.DataFrame(metrics).T.to_csv(output / "metrics.csv", index_label="series")
@@ -131,12 +131,14 @@ def run(pool_path, data_path, benchmark_path, output, overrides=None, check=Fals
                 "method": method, "config": asdict(config), "data": data.manifest(),
                 "benchmark": {"name": "CSI 300 price index", "path": str(Path(benchmark_path).resolve()), "sha256": sha256(benchmark_path)},
                 "pool_sha256": sha256(pool_path), "warnings": warnings,
-                "execution": "t close signal; t+1 open rebalance; daily close mark; long-only; no limit/ST/lot/capacity model",
+                "execution": {"signals": "prior close", "rebalance": "open", "valuation": "close",
+                              "universe": "historical non-ST", "position_units": "adjusted shares",
+                              "final_close_liquidation": config.liquidate_at_end},
                 "python": platform.python_version(),
                 "versions": {name: importlib.metadata.version(name) for name in ("numpy", "pandas", "pyarrow", "bottleneck", "matplotlib")},
                 "code": code_snapshot}
     print("Rendering consolidated report...", flush=True)
-    make_report(output, daily, metrics, pool["name"], config, data.proxies, method)
+    make_report(output, daily, metrics, pool["name"], config, method)
     manifest["elapsed_seconds"] = round(time.perf_counter() - started, 2)
     write_json(output / "manifest.json", manifest)
     for warning in warnings:

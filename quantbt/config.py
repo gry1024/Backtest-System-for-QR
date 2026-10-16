@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-START = "2021-01-01"
-END = "2026-10-01"
+START = "2025-01-01"
+END = "2026-09-30"
 WARMUP = "2020-01-01"
 
 
@@ -21,7 +21,10 @@ class Config:
     threshold_ricir: float = 0.15
     ridge_alpha: float = 0.001
     top_fraction: float = 0.2
-    cost_bps: float = 10.0
+    initial_cash: float = 1_000_000_000.0
+    commission_bps: float = 1.0
+    stamp_duty_bps: float = 5.0
+    liquidate_at_end: bool = True
     min_listing_days: int = 60
     strict_features: bool = False
     method: str = "auto"
@@ -33,14 +36,14 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
         if self.window < self.min_train_days:
             raise ValueError("window must be >= min_train_days")
-        for name in ("threshold_ric", "threshold_ricir", "ridge_alpha", "cost_bps", "top_fraction"):
+        for name in ("threshold_ric", "threshold_ricir", "ridge_alpha", "commission_bps", "stamp_duty_bps", "initial_cash", "top_fraction"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (float, int)) or not np.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")
-        if not 0 < self.top_fraction <= 1 or self.cost_bps >= 10000:
-            raise ValueError("top_fraction must be in (0,1]; cost_bps must be < 10000")
-        if not isinstance(self.strict_features, bool):
-            raise ValueError("strict_features must be boolean")
+        if not 0 < self.top_fraction <= 1 or self.commission_bps + self.stamp_duty_bps >= 10000 or self.initial_cash <= 0:
+            raise ValueError("top_fraction must be in (0,1]; initial_cash > 0; sell fees < 10000 bps")
+        if not isinstance(self.strict_features, bool) or not isinstance(self.liquidate_at_end, bool):
+            raise ValueError("strict_features and liquidate_at_end must be boolean")
         if self.method not in {"auto", "adaptive", "equal", "fixed"}:
             raise ValueError("method must be auto/adaptive/equal/fixed")
 

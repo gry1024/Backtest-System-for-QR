@@ -17,7 +17,7 @@ def sha256(path):
 
 
 class MarketData:
-    def __init__(self, directory, strict_features=False):
+    def __init__(self, directory, strict_features=False, status_path=None):
         self.directory = Path(directory)
         self.strict_features = strict_features
         self.used_files = set()
@@ -49,6 +49,19 @@ class MarketData:
         self.adjustment = np.divide(adj, base, out=np.full_like(adj, np.nan), where=(base > 0) & (adj > 0))
         # Listing age counts observed sessions, never future membership.
         self.age = np.cumsum(np.isfinite(self._raw_close), axis=0)
+        status_path = Path(status_path) if status_path else self.directory.parent / "market_status/state.feather"
+        if not status_path.exists():
+            raise ValueError("Historical ST/trading states are required; run scripts/download_status.py or pass --status")
+        status = pd.read_feather(status_path).set_index("date")
+        if status.index.has_duplicates or not status.index.is_monotonic_increasing:
+            raise ValueError("Status dates must be unique and increasing")
+        if not self.stocks.isin(status.columns).all() or not self.dates.isin(status.index).all():
+            raise ValueError("Status data must cover the stock columns and research calendar")
+        state = status.reindex(index=self.dates, columns=self.stocks).to_numpy()
+        if not np.isin(state, [-1, 0, 1, 2, 3]).all():
+            raise ValueError("Status values must be -1/0/1/2/3; see state.source.json")
+        self.state = state.astype("int8")
+        self.used_files.add(status_path)
 
     def raw(self, name):
         if name == "close":
@@ -81,10 +94,10 @@ class MarketData:
                 raise ValueError(f"${name} is unavailable: use OHLC/amt formulas or disable strict_features for explicit proxies")
             typical = sum(self.raw(key) for key in ("open", "high", "low", "close")) / 4
             if name == "vwap":
-                self.proxies[name] = "OHLC4 * relative_cumadj; price proxy, NOT actual VWAP"
+                self.proxies[name] = "OHLC4 * relative_cumadj"
                 values = typical * self.adjustment
             else:
-                self.proxies[name] = "amt / raw_OHLC4; estimated shares, NOT actual trading volume"
+                self.proxies[name] = "amt / raw_OHLC4"
                 values = np.divide(self.raw("amt"), typical, out=np.full_like(typical, np.nan), where=typical > 0)
         else:
             values = self.raw(name)
@@ -93,7 +106,7 @@ class MarketData:
 
     def eligible(self, min_listing_days):
         return (np.isfinite(self.feature("close")) & (self.raw("amt") > 0)
-                & (self.age >= min_listing_days))
+                & (self.age >= min_listing_days) & (self.state == 1))
 
     def forward_returns(self, horizon):
         """Signal at t; entry at t+1 open; exit at t+1+h open."""
@@ -104,8 +117,11 @@ class MarketData:
         return result
 
     def manifest(self):
+        observed = np.isfinite(self._raw_close)
         return {"data_start": str(self.dates[0].date()), "data_end": str(self.dates[-1].date()),
                 "stocks": len(self.stocks), "sessions": len(self.dates), "proxies": self.proxies,
+                "status_known_coverage": float(((self.state >= 0) & observed).sum() / max(observed.sum(), 1)),
+                "universe": "daily historical non-ST; unknown status excluded",
                 "files": {p.name: sha256(p) for p in sorted(self.used_files)}}
 
 

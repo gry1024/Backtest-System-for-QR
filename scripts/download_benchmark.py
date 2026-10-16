@@ -21,7 +21,7 @@ def main():
         raise RuntimeError(login.error_msg)
     try:
         result = bs.query_history_k_data_plus("sh.000300", "date,code,open,close", start_date="2020-01-01",
-                                              end_date="2026-10-01", frequency="d", adjustflag="3")
+                                              end_date="2026-09-30", frequency="d", adjustflag="3")
         if result.error_code != "0":
             raise RuntimeError(result.error_msg)
         frame = result.get_data()

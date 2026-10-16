@@ -1,0 +1,2 @@
+factor,expression,lookback,features,proxies,coverage,usable_sessions,ic,rank_ic
+f000,"TsMean(Div(Abs(TsPctChange($close,2)),Add($amt,1)),20)",20,"amt,close",,1.0,424,0.05285030494328899,0.09029088453430023

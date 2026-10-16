@@ -1,0 +1,15 @@
+{
+  "source": "BaoStock historical isST and tradestatus",
+  "end": "2026-09-30",
+  "fields": {
+    "-1": "unknown",
+    "0": "non-ST suspended",
+    "1": "non-ST trading",
+    "2": "ST suspended",
+    "3": "ST trading"
+  },
+  "retrieved_utc": "2026-10-16T16:11:44.726390+00:00",
+  "stocks": 5451,
+  "known_price_coverage": 1.0,
+  "sha256": "87ebbbfe0688d3b3ac50f623dffb42c467d8ec0a57dd88c54bc18a430d9e39e5"
+}
