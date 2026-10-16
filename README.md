@@ -1,6 +1,4 @@
-# PoolBench
-
-**Backtest system for Quantitative Researchers**
+# Backtest System for Quantitative Researchers
 
 把你的策略因子表示成一个 `pool.json` ，运行回测，变成一份 A 股因子回测报告。适合每天提出因子、需要快速验证、以及多因子组合方法的策略研究者。
 
