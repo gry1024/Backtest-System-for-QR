@@ -1,0 +1,6 @@
+{
+  "name": "Close location reversal",
+  "exprs": [
+    "Div(Sub($high,$close),Add(Sub($high,$low),1e-8))"
+  ]
+}

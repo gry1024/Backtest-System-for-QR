@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poolbench"
+version = "0.1.0"
+description = "A small, auditable A-share factor research backtester driven by pool.json"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26,<3", "pandas>=2.2,<3", "pyarrow>=16,<24",
+  "bottleneck>=1.4,<2", "matplotlib>=3.9,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+download = ["baostock>=0.9.4,<1"]
+
+[project.scripts]
+poolbench = "quantbt.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quantbt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

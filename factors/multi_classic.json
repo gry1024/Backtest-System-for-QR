@@ -1,0 +1,11 @@
+{
+  "name": "Price and activity blend",
+  "exprs": [
+    "Mul(-1,TsPctChange($close,6))",
+    "TsPctChange($close,61)",
+    "Mul(-1,TsStd(TsPctChange($close,2),20))",
+    "Mul(-1,Div(Sub($close,$open),$open))",
+    "TsMean(Div(Abs(TsPctChange($close,2)),Add($amt,1)),20)",
+    "TsMean(Div($amt,Add($num_trades,1)),20)"
+  ]
+}

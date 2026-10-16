@@ -1,0 +1,6 @@
+{
+  "name": "Overnight gap reversal",
+  "exprs": [
+    "Mul(-1,Div(Sub($open,Ref($close,1)),Ref($close,1)))"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Low volatility",
+  "exprs": [
+    "Mul(-1,TsStd(TsPctChange($close,2),20))"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Short-term reversal",
+  "exprs": [
+    "Mul(-1,TsPctChange($close,6))"
+  ]
+}

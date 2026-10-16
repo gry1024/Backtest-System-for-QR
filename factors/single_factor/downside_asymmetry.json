@@ -1,0 +1,6 @@
+{
+  "name": "Return downside asymmetry",
+  "exprs": [
+    "Mul(-1,TsSkew(TsPctChange($close,2),20))"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Medium-term momentum",
+  "exprs": [
+    "TsPctChange($close,61)"
+  ]
+}

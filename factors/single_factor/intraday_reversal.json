@@ -1,0 +1,6 @@
+{
+  "name": "Intraday reversal",
+  "exprs": [
+    "Mul(-1,Div(Sub($close,$open),$open))"
+  ]
+}

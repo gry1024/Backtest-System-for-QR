@@ -1,0 +1,10 @@
+{
+  "source": "BaoStock query_history_k_data_plus",
+  "code": "sh.000300",
+  "adjustflag": "3",
+  "retrieved_utc": "2026-10-16T14:11:39.041644+00:00",
+  "rows": 1636,
+  "start": "2020-01-02",
+  "end": "2026-09-30",
+  "sha256": "adadb2ea7b2d50662d36e8a7f35648f9d16035bdabb130ed766b2e412171e480"
+}

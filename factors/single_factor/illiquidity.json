@@ -1,0 +1,6 @@
+{
+  "name": "Price impact / illiquidity",
+  "exprs": [
+    "TsMean(Div(Abs(TsPctChange($close,2)),Add($amt,1)),20)"
+  ]
+}

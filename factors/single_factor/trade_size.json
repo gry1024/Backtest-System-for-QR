@@ -1,0 +1,6 @@
+{
+  "name": "Average trade value",
+  "exprs": [
+    "TsMean(Div($amt,Add($num_trades,1)),20)"
+  ]
+}
