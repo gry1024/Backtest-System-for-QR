@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+feathers/
+results/
+.cache/
+benchmark_download.csv
+.env
+.DS_Store

@@ -1,0 +1,626 @@
+import torch
+import os
+from gan.utils import load_pickle
+from alphagen_generic.features import *
+from alphagen.data.expression import *
+from typing import Tuple, List, Union
+import json
+import argparse
+from datetime import datetime
+import pandas as pd
+from tqdm import tqdm
+import numpy as np
+
+from alphagen.utils.correlation import batch_pearsonr, batch_spearmanr, batch_ret, batch_sharpe_ratio, batch_max_drawdown
+from gan.utils.builder import exprs2tensor
+
+
+def remove_linearly_dependent_rows(x, y, to_pred, tol=1e-10):
+    """
+    Remove linearly dependent rows using efficient rank detection for speed.
+    
+    Args:
+        x: Training factor matrix (n_samples, n_factors)
+        y: Target matrix (n_samples, n_targets)
+        to_pred: Prediction factor matrix (n_stocks, n_factors)
+        tol: Tolerance for linear independence
+    
+    Returns:
+        x_filtered: Filtered training matrix
+        y_filtered: Filtered target matrix  
+        to_pred: Original prediction matrix (unchanged)
+        selected_rows: List of selected row indices
+    """
+    if x.shape[0] <= x.shape[1]:
+        # If we have fewer samples than features, keep all samples
+        return x, y, to_pred, list(range(x.shape[0]))
+    
+    # For efficiency, only check for linear dependence if we have many more samples than features
+    # This is the common case where linear dependence in rows matters
+    sample_ratio = x.shape[0] / x.shape[1]
+    
+    if sample_ratio < 5:  # Not enough samples to worry about row dependence
+        return x, y, to_pred, list(range(x.shape[0]))
+    
+    try:
+        # Use SVD on transposed matrix to find rank efficiently
+        U, S, Vh = torch.linalg.svd(x.T, full_matrices=False)
+        
+        # Effective rank based on singular values
+        rank = torch.sum(S > tol * S[0]).item()
+        
+        if rank >= min(x.shape[0], x.shape[1]):
+            # Matrix is full rank, no need to remove rows
+            return x, y, to_pred, list(range(x.shape[0]))
+        
+        # If rank deficient, use QR decomposition to find independent rows
+        Q, R = torch.linalg.qr(x.T, mode='reduced')
+        diag_R = torch.diagonal(R, dim1=-2, dim2=-1)
+        pivot_mask = torch.abs(diag_R) > tol
+        
+        if not torch.any(pivot_mask):
+            selected_rows = [0]
+        else:
+            selected_rows = torch.where(pivot_mask)[0].tolist()
+            if len(selected_rows) == 0:
+                selected_rows = [0]
+                
+    except:
+        # If SVD/QR fails, keep all rows
+        return x, y, to_pred, list(range(x.shape[0]))
+    
+    # Filter matrices
+    x_filtered = x[selected_rows]
+    y_filtered = y[selected_rows] if y is not None else None
+    
+    return x_filtered, y_filtered, to_pred, selected_rows
+
+
+def remove_linearly_dependent_cols(x, to_pred, tol=1e-10):
+    """
+    Remove linearly dependent columns (factors) using QR decomposition with pivoting for speed.
+    
+    Args:
+        x: Training factor matrix (n_samples, n_factors)
+        to_pred: Prediction factor matrix (n_stocks, n_factors)
+        tol: Tolerance for linear independence
+    
+    Returns:
+        x_filtered: Filtered training matrix
+        to_pred_filtered: Filtered prediction matrix
+        selected_factors: List of selected factor indices
+    """
+    if x.shape[1] <= 1:
+        return x, to_pred, list(range(x.shape[1]))
+    
+    # Use SVD for more robust rank detection (faster than iterative QR)
+    try:
+        U, S, Vh = torch.linalg.svd(x, full_matrices=False)
+        
+        # Find columns corresponding to significant singular values
+        rank = torch.sum(S > tol * S[0]).item()  # Relative tolerance
+        
+        if rank == 0:
+            selected_factors = [0]
+        else:
+            # Use the first 'rank' columns as they correspond to largest singular values
+            selected_factors = list(range(min(rank, x.shape[1])))
+            
+    except:
+        # Fallback to QR decomposition if SVD fails
+        Q, R = torch.linalg.qr(x, mode='reduced')
+        diag_R = torch.diagonal(R, dim1=-2, dim2=-1)
+        pivot_mask = torch.abs(diag_R) > tol
+        
+        if not torch.any(pivot_mask):
+            selected_factors = [0]
+        else:
+            selected_factors = torch.where(pivot_mask)[0].tolist()
+            if len(selected_factors) == 0:
+                selected_factors = [0]
+    
+    # Filter matrices
+    x_filtered = x[:, selected_factors]
+    to_pred_filtered = to_pred[:, selected_factors]
+    
+    return x_filtered, to_pred_filtered, selected_factors
+
+
+def calculate_vif(x):
+    """
+    Calculate Variance Inflation Factor for each feature.
+    VIF > 10 indicates multicollinearity issues.
+    """
+    n_features = x.shape[1]
+    vif_scores = torch.zeros(n_features)
+    
+    for i in range(n_features):
+        # Regression of feature i on all other features
+        y_i = x[:, i]
+        x_others = torch.cat([x[:, :i], x[:, i+1:]], dim=1)
+        
+        if x_others.shape[1] == 0:
+            vif_scores[i] = 1.0
+            continue
+            
+        try:
+            # Add constant term
+            ones = torch.ones(x_others.shape[0], 1, device=x.device)
+            x_others_const = torch.cat([x_others, ones], dim=1)
+            
+            # Solve regression
+            coef = torch.linalg.lstsq(x_others_const, y_i.unsqueeze(1), rcond=1e-15).solution
+            y_pred = x_others_const @ coef
+            
+            # Calculate R-squared
+            ss_res = torch.sum((y_i.unsqueeze(1) - y_pred) ** 2)
+            ss_tot = torch.sum((y_i - torch.mean(y_i)) ** 2)
+            r_squared = 1 - ss_res / ss_tot
+            
+            # VIF = 1 / (1 - R^2)
+            vif_scores[i] = 1.0 / (1.0 - torch.clamp(r_squared, max=0.999))
+            
+        except:
+            vif_scores[i] = float('inf')
+    
+    return vif_scores
+
+
+def remove_multicollinearity_vif(x, to_pred, vif_threshold=10.0):
+    """
+    Remove factors with high VIF to address multicollinearity.
+    
+    Args:
+        x: Training factor matrix (n_samples, n_factors)
+        to_pred: Prediction factor matrix (n_stocks, n_factors)
+        vif_threshold: VIF threshold above which factors are removed
+    
+    Returns:
+        x_filtered: Filtered training matrix
+        to_pred_filtered: Filtered prediction matrix
+        selected_factors: List of selected factor indices
+    """
+    if x.shape[1] <= 1:
+        return x, to_pred, list(range(x.shape[1]))
+    
+    selected_factors = list(range(x.shape[1]))
+    
+    while len(selected_factors) > 1:
+        # Calculate VIF for current factors
+        x_current = x[:, selected_factors]
+        vif_scores = calculate_vif(x_current)
+        
+        # Find factor with highest VIF
+        max_vif_idx = torch.argmax(vif_scores)
+        max_vif = vif_scores[max_vif_idx]
+        
+        # If max VIF is below threshold, stop
+        if max_vif <= vif_threshold:
+            break
+            
+        # Remove the factor with highest VIF
+        selected_factors.pop(max_vif_idx.item())
+    
+    # Filter matrices
+    x_filtered = x[:, selected_factors]
+    to_pred_filtered = to_pred[:, selected_factors]
+    
+    return x_filtered, to_pred_filtered, selected_factors
+
+
+
+def load_alpha_pool(raw) -> Tuple[List[Expression], List[float]]:
+    exprs_raw = raw['exprs']
+    if 'weights' in raw:
+        weights = raw['weights']
+    else:
+        weights = None
+    exprs = [eval(expr_raw.replace('open', 'open_').replace('$', '')) for expr_raw in exprs_raw]
+    return exprs, weights
+
+def load_alpha_pool_by_path(path: str) -> Tuple[List[Expression], List[float]]:
+    if path.endswith('.json'):
+        with open(path, encoding='utf-8') as f:
+                raw = json.load(f)
+                return load_alpha_pool(raw)
+    elif path.endswith('.csv'):
+        df = pd.read_csv(path)
+        exprs = df['exprs'].tolist()
+        exprs = [eval(expr_raw.replace('open', 'open_').replace('$', '')) for expr_raw in exprs if "Ensemble" not in expr_raw]
+        try:
+            weights = df['weight'].tolist()[:-1]
+        except:
+            weights = None
+        return exprs, weights
+    else:
+        raise ValueError(f"Unsupported file extension: {path}")
+
+def chunk_batch_spearmanr(x, y, chunk_size=100):
+    n_days = len(x)
+    spearmanr_list= []
+    for i in range(0, n_days, chunk_size):
+        spearmanr_list.append(batch_spearmanr(x[i:i+chunk_size], y[i:i+chunk_size]))
+    spearmanr_list = torch.cat(spearmanr_list, dim=0)
+    return spearmanr_list
+
+def get_tensor_metrics(x, y, y_ret, risk_free_rate=0.0):
+    # Ensure tensors are 2D (days, stocks)
+    if x.dim() > 2: x = x.squeeze(-1)
+    if y.dim() > 2: y = y.squeeze(-1)
+    if y_ret.dim() > 2: y_ret = y_ret.squeeze(-1)
+
+    # IC / RIC use the N-day forward return target (long-horizon prediction quality).
+    ic_s = batch_pearsonr(x, y)
+    ric_s = chunk_batch_spearmanr(x, y, chunk_size=args.chunk_size)
+
+    # RET / Sharpe / MDD use the 1-day forward return target (true daily PnL semantics,
+    # matching AlphaPROBE's official run_adaptive_combination.py).
+    ret_s = batch_ret(x, y_ret)
+
+    ic_s = torch.nan_to_num(ic_s, nan=0.)
+    ric_s = torch.nan_to_num(ric_s, nan=0.)
+    ret_s = torch.nan_to_num(ret_s, nan=0.)
+    ic_s_mean = ic_s.mean().item()
+    ic_s_std = ic_s.std().item() if ic_s.std().item() > 1e-6 else 1.0
+    ric_s_mean = ric_s.mean().item()
+    ric_s_std = ric_s.std().item() if ric_s.std().item() > 1e-6 else 1.0
+    ret_s_mean = (ret_s).mean().item()
+    ret_s_std = (ret_s).std().item() if (ret_s).std().item() > 1e-6 else 1.0
+
+    # ret_s is already the daily portfolio return (1-day forward), so no further rescaling.
+    ret_sharpe = batch_sharpe_ratio(ret_s, risk_free_rate).item()
+    ret_mdd = batch_max_drawdown(ret_s).item()
+    result = dict(
+        ic=ic_s_mean,
+        ic_std=ic_s_std,
+        icir=ic_s_mean / ic_s_std,
+        ric=ric_s_mean,
+        ric_std=ric_s_std,
+        ricir=ric_s_mean / ric_s_std,
+        ret=ret_s_mean * len(ret_s) / 3,
+        ret_std=ret_s_std,
+        retir=ret_s_mean / ret_s_std,
+        ret_sharpe=ret_sharpe,
+        ret_mdd=ret_mdd,
+    )
+    return result, ret_s
+
+
+def _trading_days(data: StockData) -> pd.DatetimeIndex:
+    s = data.max_backtrack_days
+    return pd.DatetimeIndex(data._dates[s:s + data.n_days])
+
+
+def _date_mask(dates: pd.DatetimeIndex, start: str, end: str) -> np.ndarray:
+    return np.asarray((dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end)))
+
+
+def run(args):
+    """
+    Main function to run adaptive factor combination and evaluation.
+    """
+    global batch_spearmanr
+    if getattr(args, "efficient_rank", False):
+        from alpha158.ranking import batch_spearmanr as efficient_spearmanr
+        batch_spearmanr = efficient_spearmanr
+    else:
+        from alphagen.utils.correlation import batch_spearmanr
+    window = args.window
+    if isinstance(window, str):
+        assert window == 'inf'
+        window = float('inf')
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.cuda)
+    use_cuda = torch.cuda.is_available() and int(args.cuda) >= 0
+    device = torch.device('cuda:0') if use_cuda else torch.device('cpu')
+    def _dev(t):
+        return t.cuda() if use_cuda else t
+    QLIB_PATH = "data/qlib_data/us_data_qlib_latest" if args.instruments == 'sp500' else "data/qlib_data/cn_data_rolling"
+    # 1. Define Target and Load Data
+    close = Feature(FeatureType.CLOSE)
+    # 20-day forward return: long-horizon target used for IC / RIC and OLS regression.
+    target = Ref(close, -args.label_days) / close - 1
+    # 1-day forward return: used only for the final Return / Sharpe / MDD evaluation,
+    # matching AlphaPROBE's official run_adaptive_combination.py semantics.
+    return_target = Ref(close, -1) / close - 1
+
+    train_end_time = f'{args.train_end_year}-12-31'
+    valid_start_time = f'{args.train_end_year + 1}-01-01'
+    valid_end_time = f'{args.train_end_year + 1}-12-31'
+    test_start_time = '2023-05-01'
+    test_end_time = '2026-04-30'
+
+    alpha158 = False
+    if args.expressions_file.endswith(".json"):
+        with open(args.expressions_file, encoding="utf-8") as f:
+            manifest = json.load(f)
+            benchmark = manifest.get("benchmark")
+            alpha158 = manifest.get("feature_set") == "Alpha158"
+        if benchmark:
+            data_index = StockData(instrument=[benchmark], start_time=test_start_time,
+                                   end_time=test_end_time, qlib_path=QLIB_PATH, device=device)
+            ret_s = return_target.evaluate(data_index)[:, 0]
+            if not torch.isfinite(ret_s).all():
+                raise ValueError("Index benchmark contains missing daily returns")
+            output = os.path.dirname(args.expressions_file)
+            np.save(os.path.join(output, "ret_s.npy"), ret_s.cpu().numpy())
+            np.save(os.path.join(output, "ret_s_dates.npy"), _trading_days(data_index).values)
+            mean, std = ret_s.mean().item(), ret_s.std().item()
+            metrics = dict(ret=mean * len(ret_s) / 3, ret_std=std, retir=mean / std,
+                           ret_sharpe=batch_sharpe_ratio(ret_s, 0.0).item(),
+                           ret_mdd=batch_max_drawdown(ret_s).item())
+            print(f"{benchmark} index benchmark: {test_start_time}..{test_end_time}, n={len(ret_s)}")
+            print(pd.DataFrame([metrics], index=["Test"]).to_string())
+            return
+
+    if alpha158:
+        import qlib
+        qlib.init(provider_uri=QLIB_PATH, region="us" if args.instruments == "sp500" else "cn", kernels=1)
+        StockData._qlib_initialized = True
+    all_end = max(valid_end_time, test_end_time)
+    data_all = StockData(instrument=args.instruments,
+                         start_time='2015-01-01',
+                         end_time=all_end,
+                         qlib_path=QLIB_PATH,
+                         device=device)
+    dates = _trading_days(data_all)
+    valid_m = _date_mask(dates, valid_start_time, valid_end_time)
+    test_m = _date_mask(dates, test_start_time, test_end_time)
+    eval_idx = np.flatnonzero(valid_m | test_m)
+    print(
+        f"[combo] valid {valid_start_time}..{valid_end_time}  n={int(valid_m.sum())}  "
+        f"test {test_start_time}..{test_end_time}  n={int(test_m.sum())}  "
+        f"data_all 2015-01-01..{all_end}  n={len(dates)}",
+        flush=True,
+    )
+    if (valid_m & test_m).any():
+        print("[combo] WARNING: valid/test overlap; each row uses its own date mask", flush=True)
+    if eval_idx.size == 0:
+        raise ValueError("valid/test ranges contain no trading days in data_all")
+
+    # 2. Load expressions and convert to tensor
+    print(f"Loading expressions from {args.expressions_file}...")
+    if alpha158:
+        if args.use_weights:
+            raise ValueError("Alpha158 uses historical OLS; do not enable --use_weights")
+        from alpha158.features import load_tensor
+        fct_tensor = load_tensor(data_all, cache_file=getattr(args, "alpha158_cache_file", None))
+        print(f"Loaded {fct_tensor.shape[-1]} official Alpha158 features.")
+    else:
+        expressions, weights = load_alpha_pool_by_path(args.expressions_file)
+        print(f"Loaded {len(expressions)} expressions.")
+
+    if args.use_weights:
+        rows = []
+        weights = _dev(torch.tensor(weights))
+        for name, start, end in (("Validation", valid_start_time, valid_end_time),
+                                 ("Test", test_start_time, test_end_time)):
+            data_split = StockData(instrument=args.instruments, start_time=start,
+                                   end_time=end, qlib_path=QLIB_PATH, device=device)
+            prediction = exprs2tensor(expressions, data_split, normalize=True) @ weights
+            labels = exprs2tensor([target], data_split, normalize=False)
+            daily_returns = exprs2tensor([return_target], data_split, normalize=False)
+            metrics, ret_s = get_tensor_metrics(_dev(prediction), _dev(labels), _dev(daily_returns))
+            rows.append(metrics)
+            prefix = "valid_ret_s" if name == "Validation" else "ret_s"
+            output = os.path.dirname(args.expressions_file)
+            np.save(os.path.join(output, prefix + ".npy"), ret_s.cpu().numpy())
+            np.save(os.path.join(output, prefix + "_dates.npy"), _trading_days(data_split).values)
+            del data_split, prediction, labels, daily_returns, ret_s
+        results_df = pd.DataFrame(rows, index=["Validation", "Test"])
+        print("\n--- Final Performance Metrics ---")
+        
+        # Print with full precision and no truncation
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', None)
+        pd.set_option('display.max_colwidth', None)
+        print(results_df.round(4))
+        
+        # Also print in a more parseable format
+        print("\n--- Parseable Format ---")
+        print(f"{'Dataset':<12} {'IC':>8} {'IC_STD':>8} {'ICIR':>8} {'RIC':>8} {'RIC_STD':>8} {'RICIR':>8} {'RET':>8} {'RET_STD':>8} {'RETIR':>8} {'RET_SR':>8} {'RET_MDD':>8}")
+        for index, row in results_df.iterrows():
+            print(f"{index:<12} {row['ic']:>8.4f} {row['ic_std']:>8.4f} {row['icir']:>8.4f} {row['ric']:>8.4f} {row['ric_std']:>8.4f} {row['ricir']:>8.4f} {row['ret']:>8.4f} {row['ret_std']:>8.4f} {row['retir']:>8.4f} {row['ret_sharpe']:>8.4f} {row['ret_mdd']:>8.4f}")
+        
+        print("="*50)
+        
+    else:
+        if not alpha158:
+            fct_tensor = exprs2tensor(expressions, data_all, normalize=True)
+        tgt_tensor = exprs2tensor([target], data_all, normalize=False)
+        # 1-day return target aligned to the same data_all window/date axis as tgt_tensor.
+        ret_tgt_tensor = exprs2tensor([return_target], data_all, normalize=False)
+
+        # 3. Pre-calculate daily metrics for all factors
+        ic_list, ric_list, ret_list = [], [], []
+        print("Pre-calculating daily metrics for each factor...")
+        for i in tqdm(range(fct_tensor.shape[-1])):
+            factor_slice = _dev(fct_tensor[..., i])
+            target_slice = tgt_tensor[..., 0]
+            ic_s = batch_pearsonr(factor_slice, target_slice)
+            ric_s = chunk_batch_spearmanr(factor_slice, target_slice, chunk_size=args.chunk_size)
+            #ret_s = batch_ret(factor_slice, target_slice)
+            ic_list.append(torch.nan_to_num(ic_s, nan=0.))
+            ric_list.append(torch.nan_to_num(ric_s, nan=0.))
+            #ret_list.append(torch.nan_to_num(ret_s, nan=0.))
+
+        ic_s = torch.stack(ic_list, dim=-1)
+        ric_s = torch.stack(ric_list, dim=-1)
+        #ret_s = torch.stack(ret_list, dim=-1)
+        if use_cuda:
+            torch.cuda.empty_cache()
+
+        # 4. Main adaptive combination loop
+        pred_list = []
+        shift = args.label_days + 1  # To avoid lookahead bias
+        
+        print("Starting adaptive combination process...")
+        pbar = tqdm(eval_idx)
+        for cur in pbar:
+            cur = int(cur)
+            # Define rolling window for evaluation
+            begin = 0 if not np.isfinite(window) else max(0, cur - window - shift)
+            
+            # Slice metrics for the current window
+            cur_ic = ic_s[begin:cur-shift]
+            cur_ric = ric_s[begin:cur-shift]
+            
+            # Calculate performance metrics over the window
+            ic_mean = cur_ic.mean(dim=0)
+            ic_std = cur_ic.std(dim=0)
+            ric_mean = cur_ric.mean(dim=0)
+            ric_std = cur_ric.std(dim=0)
+
+            icir = ic_mean / ic_std
+            ricir = ric_mean / ric_std
+            
+            # Filter and select best factors
+            metrics_df = pd.DataFrame({
+                'ric': ric_mean.cpu().numpy(),
+                'ricir': ricir.cpu().numpy()
+            })
+            good_factors = metrics_df[(metrics_df['ric'].abs() > args.threshold_ric) & (metrics_df['ricir'].abs() > args.threshold_ricir)]
+            if len(good_factors) < 1:
+                good_factors = metrics_df.reindex(metrics_df.ricir.abs().sort_values(ascending=False).index).iloc[:1]
+            
+            good_idx = good_factors.iloc[:args.n_factors].index.to_list()
+            
+            # Prepare data for linear regression
+            x = _dev(fct_tensor[begin:cur-shift, :, good_idx])
+            y = tgt_tensor[begin:cur-shift, :, :]
+            to_pred = _dev(fct_tensor[cur, :, good_idx])
+            y = y.reshape(-1, y.shape[-1])
+            x = x.reshape(-1, x.shape[-1])
+            
+            # Filter out NaNs
+            valid_mask = torch.isfinite(y)[:, 0]
+            y = y[valid_mask]
+            x = x[valid_mask]
+            
+            to_pred = torch.nan_to_num(to_pred, nan=0.)
+            
+            # Remove linearly dependent columns (factors) for speed
+            x, to_pred, selected_factors = remove_linearly_dependent_cols(x, to_pred, tol=args.linear_dep_tol)
+            
+            # Remove linearly dependent rows (samples) for speed  
+            x, y, to_pred, selected_rows = remove_linearly_dependent_rows(x, y, to_pred, tol=args.linear_dep_tol)
+            
+            # Add constant for intercept
+            ones = torch.ones_like(x[..., 0:1])
+            x = torch.cat([x, ones], dim=-1)
+            ones_pred = torch.ones_like(to_pred[..., 0:1])
+            to_pred = torch.cat([to_pred, ones_pred], dim=-1)
+            
+            # Train regression and predict with improved stability
+            try:
+                # Check condition number before solving
+                coef = torch.linalg.lstsq(x, y).solution
+                
+                pred = to_pred @ coef
+                
+            except Exception as e:
+                print(f"Warning: Regression failed with error {e}, using zero prediction")
+                # Handle singular matrix case
+                pred = torch.zeros_like(to_pred[:, 0:1])
+
+            pred_list.append(pred[:, 0])
+            
+            # Update progress bar description with running IC
+            if len(pred_list) > 1:
+                running_preds = torch.stack(pred_list, dim=0)
+                running_targets = tgt_tensor[eval_idx[:len(pred_list)], :, 0]
+                running_ic = batch_pearsonr(running_preds, running_targets).mean().item()
+                pbar.set_description(f"Running IC: {running_ic:.4f}, Factors selected: {len(good_idx)}")
+
+
+        # 5. Evaluate and display results
+        print("\n" + "="*50)
+        print("Adaptive combination finished. Calculating final metrics...")
+        
+        all_pred = torch.stack(pred_list, dim=0)
+        v_on = torch.as_tensor(valid_m[eval_idx], device=all_pred.device)
+        t_on = torch.as_tensor(test_m[eval_idx], device=all_pred.device)
+        rows, names, ret_s = [], [], None
+        if valid_m.any():
+            vi = torch.as_tensor(np.flatnonzero(valid_m), device=tgt_tensor.device)
+            valid_results, _ = get_tensor_metrics(
+                _dev(all_pred[v_on]), _dev(tgt_tensor[vi, :, 0]), _dev(ret_tgt_tensor[vi, :, 0])
+            )
+            rows.append(valid_results)
+            names.append("Validation")
+        if test_m.any():
+            ti = torch.as_tensor(np.flatnonzero(test_m), device=tgt_tensor.device)
+            test_results, ret_s = get_tensor_metrics(
+                _dev(all_pred[t_on]), _dev(tgt_tensor[ti, :, 0]), _dev(ret_tgt_tensor[ti, :, 0])
+            )
+            rows.append(test_results)
+            names.append("Test")
+        if ret_s is None:
+            ret_s = torch.zeros(0)
+        ret_s = ret_s.cpu().numpy() if torch.is_tensor(ret_s) else ret_s
+        save_path = os.path.join(os.path.dirname(args.expressions_file), 'ret_s.npy')
+        np.save(save_path, ret_s)
+        np.save(save_path.replace("ret_s.npy", "ret_s_dates.npy"), dates[test_m].values)
+        results_df = pd.DataFrame(rows, index=names)
+        print("\n--- Final Performance Metrics ---")
+        
+        # Print with full precision and no truncation
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', None)
+        pd.set_option('display.max_colwidth', None)
+        print(results_df.round(4))
+        
+        # Also print in a more parseable format
+        print("\n--- Parseable Format ---")
+        print(f"{'Dataset':<12} {'IC':>8} {'IC_STD':>8} {'ICIR':>8} {'RIC':>8} {'RIC_STD':>8} {'RICIR':>8} {'RET':>8} {'RET_STD':>8} {'RETIR':>8} {'RET_SR':>8} {'RET_MDD':>8}")
+        for index, row in results_df.iterrows():
+            print(f"{index:<12} {row['ic']:>8.4f} {row['ic_std']:>8.4f} {row['icir']:>8.4f} {row['ric']:>8.4f} {row['ric_std']:>8.4f} {row['ricir']:>8.4f} {row['ret']:>8.4f} {row['ret_std']:>8.4f} {row['retir']:>8.4f} {row['ret_sharpe']:>8.4f} {row['ret_mdd']:>8.4f}")
+        
+        print("="*50)
+
+
+    if getattr(args, "metrics_file", None):
+        results_df.to_json(args.metrics_file, orient="index", indent=2)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--expressions_file', type=str, required=True,
+                        help='Path to a JSON file containing a list of alpha expressions.')
+    parser.add_argument('--metrics_file', type=str, default=None,
+                        help='Optional JSON output for performance metrics.')
+    parser.add_argument('--efficient_rank', action='store_true',
+                        help='Use linear-memory average-tie ranks for Spearman correlation.')
+    parser.add_argument('--alpha158_cache_file', type=str, default=None,
+                        help='Optional disk-backed normalized Alpha158 feature tensor.')
+    parser.add_argument('--instruments', type=str, default='csi300')
+    parser.add_argument('--train_end_year', type=int, default=2021)
+    parser.add_argument('--threshold_ric', type=float, default=0.015)
+    parser.add_argument('--threshold_ricir', type=float, default=0.15)
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--cuda', type=int, default=0)
+    parser.add_argument('--n_factors', type=int, default=10,
+                        help='Maximum number of factors to select at each step.')
+    parser.add_argument('--chunk_size', type=int, default=400,
+                        help='Chunk size for calculating Spearman correlation.')
+    parser.add_argument('--window', type=str, default='inf',
+                        help="Rolling window size for factor evaluation. 'inf' for expanding window.")
+    parser.add_argument('--label_days', type=int, default=20,
+                        help="Number of days to label the target.")
+    parser.add_argument('--use_weights', type=bool, default=False,
+                        help="Whether to use weights for the factors.")
+    parser.add_argument('--corr_threshold', type=float, default=0.95,
+                        help="Correlation threshold for multicollinearity detection.")
+    parser.add_argument('--ridge_alpha', type=float, default=1e-6,
+                        help="Ridge regression regularization parameter.")
+    parser.add_argument('--use_vif', type=bool, default=False,
+                        help="Whether to use VIF for multicollinearity detection.")
+    parser.add_argument('--linear_dep_tol', type=float, default=1e-10,
+                        help="Tolerance for linear dependence detection.")
+    args = parser.parse_args()
+    
+    # Set seed for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
+    run(args)
